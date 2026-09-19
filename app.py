@@ -15,18 +15,12 @@ def unify_character_color_stream(
   cap_src = cv2.VideoCapture(source_path)
   cap_tgt = cv2.VideoCapture(target_sample_path)
 
-  ret_tgt, frame_tgt = cap_tgt.read()
-  if not ret_tgt:
-    return False
-
   fps = cap_src.get(cv2.CAP_PROP_FPS)
   width = int(cap_src.get(cv2.CAP_PROP_FRAME_WIDTH))
   height = int(cap_src.get(cv2.CAP_PROP_FRAME_HEIGHT))
   total_frames = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
 
-  # 一度OpenCVで書き出すためのテンポラリファイル
   raw_output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-
   fourcc = cv2.VideoWriter_fourcc(*"mp4v")
   out = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
 
@@ -39,21 +33,37 @@ def unify_character_color_stream(
     if not ret_src:
       break
 
-    # 白背景を保護するためのマスク作成
+    ret_tgt, frame_tgt = cap_tgt.read()
+    # ターゲット動画がループするように、終端に達したら巻き戻す
+    if not ret_tgt:
+      cap_tgt.set(cv2.CAP_PROP_POS_FRAMES, 0)
+      ret_tgt, frame_tgt = cap_tgt.read()
+      if not ret_tgt:
+        frame_tgt = frame_src  # 万が一読み込めない場合のフォールバック
+
+    # --- 改善ポイント: キャラクターの「茶色い部分」だけを検出するマスク ---
+    # 花束や小物、目を巻き込まないよう、茶色・オレンジ系の色相範囲を指定
     hsv_src = cv2.cvtColor(frame_src, cv2.COLOR_BGR2HSV)
-    lower_white = np.array([0, 0, 200])
-    upper_white = np.array([180, 30, 255])
-    bg_mask = cv2.inRange(hsv_src, lower_white, upper_white)
-    char_mask = cv2.bitwise_not(bg_mask)
+    hsv_tgt = cv2.cvtColor(frame_tgt, cv2.COLOR_BGR2HSV)
+
+    # OpenCVのH(色相)は0〜180 (茶色・オレンジはだいたい 5 〜 25 の範囲)
+    lower_brown = np.array([5, 30, 50])
+    upper_brown = np.array([25, 255, 255])
+
+    char_mask = cv2.inRange(hsv_src, lower_brown, upper_brown)
+    target_char_mask = cv2.inRange(hsv_tgt, lower_brown, upper_brown)
 
     # Lab色空間に変換
     src_lab = cv2.cvtColor(frame_src, cv2.COLOR_BGR2LAB).astype("float32")
     tgt_lab = cv2.cvtColor(frame_tgt, cv2.COLOR_BGR2LAB).astype("float32")
 
+    # 茶色い部分のピクセルだけで平均と標準偏差を計算
     src_pixels = src_lab[char_mask > 0]
-    tgt_pixels = tgt_lab[char_mask > 0]
+    tgt_pixels = tgt_lab[target_char_mask > 0]
 
-    if len(src_pixels) > 0 and len(tgt_pixels) > 0:
+    adjusted_frame = frame_src.copy()
+
+    if len(src_pixels) > 10 and len(tgt_pixels) > 10:
       src_mean = np.mean(src_pixels, axis=0)
       src_std = np.std(src_pixels, axis=0)
       tgt_mean = np.mean(tgt_pixels, axis=0)
@@ -64,6 +74,7 @@ def unify_character_color_stream(
         channel_data = adjusted_lab[:, :, i]
         std_src = src_std[i] if src_std[i] > 1e-5 else 1e-5
 
+        # 茶色マスクの部分にだけカラーマッチングを適用
         masked_channel = (channel_data - src_mean[i]) * (
             tgt_std[i] / std_src
         ) + tgt_mean[i]
@@ -72,8 +83,6 @@ def unify_character_color_stream(
 
       adjusted_lab = adjusted_lab.astype("uint8")
       adjusted_frame = cv2.cvtColor(adjusted_lab, cv2.COLOR_LAB2BGR)
-    else:
-      adjusted_frame = frame_src
 
     out.write(adjusted_frame)
     frame_count += 1
@@ -87,7 +96,7 @@ def unify_character_color_stream(
   progress_bar.empty()
   status_text.empty()
 
-  # ── ブラウザ再生可能なH.264形式にffmpegで変換 ──
+  # ブラウザ再生用のH.264変換
   status_text.text("ブラウザ再生用に動画を最適化中...")
   try:
     subprocess.run(
@@ -116,7 +125,7 @@ def unify_character_color_stream(
 # --- Streamlit UI ---
 st.title("🎨 動画キャラクター色味統一ツール")
 st.write(
-    "基準となる動画の色味（本体・眉・尻尾などの茶色）を、変換したい動画のキャラクターに適用します。"
+    "小道具（花束など）を巻き込まず、キャラクターの茶色い毛並み・眉・尻尾の色だけをターゲットに合わせます。"
 )
 
 col1, col2 = st.columns(2)
@@ -138,7 +147,7 @@ if source_file and target_file:
   if st.button(
       "✨ 色味を統一する処理を開始", type="primary", use_container_width=True
   ):
-    with st.spinner("動画のカラーマッチング処理を実行中..."):
+    with st.spinner("カラーマッチング処理を実行中..."):
       with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_src:
         tmp_src.write(source_file.read())
         src_path = tmp_src.name
