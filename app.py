@@ -23,7 +23,6 @@ def unify_character_color_stream(
   height = int(cap_src.get(cv2.CAP_PROP_FRAME_HEIGHT))
   total_frames = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
 
-  # コーデック設定（ブラウザ再生しやすい mp4v）
   fourcc = cv2.VideoWriter_fourcc(*"mp4v")
   out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
@@ -51,15 +50,20 @@ def unify_character_color_stream(
     tgt_pixels = tgt_lab[char_mask > 0]
 
     if len(src_pixels) > 0 and len(tgt_pixels) > 0:
-      src_mean, src_std = cv2.meanStdDev(src_pixels)
-      tgt_mean, tgt_std = cv2.meanStdDev(tgt_pixels)
+      # NumPyを使って各チャンネルの平均・標準偏差を安全に計算 (形状: (3,))
+      src_mean = np.mean(src_pixels, axis=0)
+      src_std = np.std(src_pixels, axis=0)
+      tgt_mean = np.mean(tgt_pixels, axis=0)
+      tgt_std = np.std(tgt_pixels, axis=0)
 
       adjusted_lab = src_lab.copy()
       for i in range(3):
         channel_data = adjusted_lab[:, :, i]
-        masked_channel = (
-            channel_data - src_mean[i][0]
-        ) * (tgt_std[i][0] / (src_std[i][0] + 1e-5)) + tgt_mean[i][0]
+        std_src = src_std[i] if src_std[i] > 1e-5 else 1e-5
+
+        masked_channel = (channel_data - src_mean[i]) * (
+            tgt_std[i] / std_src
+        ) + tgt_mean[i]
         channel_data = np.where(char_mask > 0, masked_channel, channel_data)
         adjusted_lab[:, :, i] = np.clip(channel_data, 0, 255)
 
@@ -108,7 +112,6 @@ if source_file and target_file:
       "✨ 色味を統一する処理を開始", type="primary", use_container_width=True
   ):
     with st.spinner("動画のカラーマッチング処理を実行中..."):
-      # アップロードされたファイルを一時保存
       with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_src:
         tmp_src.write(source_file.read())
         src_path = tmp_src.name
@@ -121,7 +124,6 @@ if source_file and target_file:
           delete=False, suffix=".mp4"
       ).name
 
-      # 処理実行
       success = unify_character_color_stream(src_path, tgt_path, output_path)
 
       if success:
