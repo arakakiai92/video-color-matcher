@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import cv2
 import numpy as np
@@ -9,7 +10,7 @@ st.set_page_config(
 
 
 def unify_character_color_stream(
-    source_path, target_sample_path, output_path
+    source_path, target_sample_path, final_output_path
 ):
   cap_src = cv2.VideoCapture(source_path)
   cap_tgt = cv2.VideoCapture(target_sample_path)
@@ -23,8 +24,11 @@ def unify_character_color_stream(
   height = int(cap_src.get(cv2.CAP_PROP_FRAME_HEIGHT))
   total_frames = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
 
+  # 一度OpenCVで書き出すためのテンポラリファイル
+  raw_output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+
   fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-  out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+  out = cv2.VideoWriter(raw_output_path, fourcc, fps, (width, height))
 
   progress_bar = st.progress(0)
   status_text = st.empty()
@@ -50,7 +54,6 @@ def unify_character_color_stream(
     tgt_pixels = tgt_lab[char_mask > 0]
 
     if len(src_pixels) > 0 and len(tgt_pixels) > 0:
-      # NumPyを使って各チャンネルの平均・標準偏差を安全に計算 (形状: (3,))
       src_mean = np.mean(src_pixels, axis=0)
       src_std = np.std(src_pixels, axis=0)
       tgt_mean = np.mean(tgt_pixels, axis=0)
@@ -83,7 +86,31 @@ def unify_character_color_stream(
   out.release()
   progress_bar.empty()
   status_text.empty()
-  return True
+
+  # ── ブラウザ再生可能なH.264形式にffmpegで変換 ──
+  status_text.text("ブラウザ再生用に動画を最適化中...")
+  try:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            raw_output_path,
+            "-vcodec",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            final_output_path,
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    status_text.empty()
+    return True
+  except Exception as e:
+    status_text.error(f"動画の変換に失敗しました: {e}")
+    return False
 
 
 # --- Streamlit UI ---
